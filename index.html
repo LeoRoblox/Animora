@@ -169,7 +169,6 @@ main{max-width:1420px;margin:0 auto;padding:30px}
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-app.js";
   import { getDatabase, ref, get, set, update, remove, onValue } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-database.js";
   import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
-  import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
   const firebaseConfig = {
     apiKey: "AIzaSyB5x35yNDU0ZeI_aXueR7NsXV8MoUzrT94",
@@ -183,63 +182,26 @@ main{max-width:1420px;margin:0 auto;padding:30px}
 
   const firebaseApp = initializeApp(firebaseConfig);
   const firebaseAuth = getAuth(firebaseApp);
-  // Realtime Database URL is intentionally left configurable because Firebase did not include it in the supplied web config.
   const FIREBASE_DATABASE_URL = window.ANIMORA_FIREBASE_DATABASE_URL || "https://animora-8165c-default-rtdb.europe-west1.firebasedatabase.app/";
-  const firebaseDB = FIREBASE_DATABASE_URL ? getDatabase(firebaseApp, FIREBASE_DATABASE_URL) : null;
-  const supabase = createClient(
-    "https://fxujsshzymuefojoszjk.supabase.co",
-    "sb_publishable_DClnU-abS_Y0ZdCGgEyH5g_1DfvFRHs"
-  );
+  const firebaseDB = getDatabase(firebaseApp, FIREBASE_DATABASE_URL);
 
   window.AnimoraCloud = {
-    firebaseApp, firebaseAuth, firebaseDB, supabase,
+    firebaseApp, firebaseAuth, firebaseDB,
     createUserWithEmailAndPassword: (email,pw) => createUserWithEmailAndPassword(firebaseAuth,email,pw),
     signInWithEmailAndPassword: (email,pw) => signInWithEmailAndPassword(firebaseAuth,email,pw),
     signOut: () => signOut(firebaseAuth),
     updateProfile: (user,data) => updateProfile(user,data),
-    async uploadAsset(path, file){
-      if(!file) throw new Error("Keine Datei ausgewählt.");
-      const { error } = await supabase.storage
-        .from("animora-assets")
-        .upload(path, file, {
-          contentType: file.type || "application/octet-stream",
-          cacheControl: "3600",
-          upsert: false
-        });
-      if(error) throw error;
-      const { data } = supabase.storage
-        .from("animora-assets")
-        .getPublicUrl(path);
-      return data.publicUrl;
-    },
-    async deleteAsset(path){
-      if(!path) return;
-      const { error } = await supabase.storage.from("animora-assets").remove([path]);
-      if(error) throw error;
-    },
-    async saveAssetMeta(asset){
-      if(!firebaseDB) return;
-      await set(ref(firebaseDB, "assets/"+asset.id), asset);
-    },
-    async deleteAssetMeta(id){
-      if(!firebaseDB) return;
-      await remove(ref(firebaseDB, "assets/"+id));
-    },
-    async saveUser(user){
-      if(!firebaseDB) return;
-      await set(ref(firebaseDB, "users/"+user.id), user);
-    },
-    async saveFolders(uid, data){
-      if(!firebaseDB || !uid) return;
-      await set(ref(firebaseDB, "folders/"+uid), data);
-    },
+    async uploadAsset(path, file){ throw new Error("Firebase Storage ist noch nicht verbunden."); },
+    async deleteAsset(path){ return; },
+    async saveAssetMeta(asset){ await set(ref(firebaseDB, "assets/"+asset.id), asset); },
+    async deleteAssetMeta(id){ await remove(ref(firebaseDB, "assets/"+id)); },
+    async saveUser(user){ const {password,...safeUser}=user; await set(ref(firebaseDB, "users/"+user.id), safeUser); },
+    async saveFolders(uid,data){ if(uid) await set(ref(firebaseDB,"folders/"+uid),data); },
     async loadAll(){
-      if(!firebaseDB) return null;
       const [a,u,f] = await Promise.all([get(ref(firebaseDB,"assets")),get(ref(firebaseDB,"users")),get(ref(firebaseDB,"folders"))]);
-      return { assets:a.val()||{}, users:u.val()||{}, folders:f.val()||{} };
+      return {assets:a.val()||{},users:u.val()||{},folders:f.val()||{}};
     }
   };
-
   window.dispatchEvent(new Event("animora-cloud-ready"));
 </script>
 <script>
@@ -597,8 +559,8 @@ function bindAuth(){
       const username=document.getElementById("username").value.trim(),email=document.getElementById("email").value.trim(),pw=document.getElementById("password").value;
       if(username.length<3||username.length>20)return toast("Der Benutzername muss 3–20 Zeichen lang sein.");
       if(userByName(username)||users.some(u=>u.email.toLowerCase()===email.toLowerCase()))return toast("Benutzername oder Email ist bereits vergeben.");
-      const cred=await cloud.createUserWithEmailAndPassword(email,pw);
-      try{await cloud.updateProfile(cred.user,{displayName:username})}catch{}
+      const cred=await cloud.firebaseAuth.createUserWithEmailAndPassword(email,pw);
+      try{await cloud.firebaseAuth.currentUser?.updateProfile({displayName:username})}catch{}
       const isOwner=username.toLowerCase()==="l3o.yt";
       const u={id:cred.user.uid,username,email,plan:isOwner?"Pro":"Free",loginMethod:"Passwort",active:true,mora:0,subscriptionActive:isOwner,subscriptionPaused:false};
       users.push(u);state.user=u;state.page="home";saveAll();toast("Account erstellt");render();
@@ -607,7 +569,7 @@ function bindAuth(){
       const local=u=>u&&u.active!==false;
       let u=userByName(id);
       const email=u?.email||id;
-      const cred=await cloud.signInWithEmailAndPassword(email,pw);
+      const cred=await cloud.firebaseAuth.signInWithEmailAndPassword(email,pw);
       if(u&&!local(u))return toast("Dieser Account ist deaktiviert.");
       if(!u){u={id:cred.user.uid,username:cred.user.displayName||email.split("@")[0],email,plan:"Free",loginMethod:"Passwort",active:true,mora:0,subscriptionActive:false,subscriptionPaused:false};users.push(u);saveAll()}
       state.user=u;state.page="home";toast("Willkommen zurück");render();
