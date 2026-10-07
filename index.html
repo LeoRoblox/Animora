@@ -228,13 +228,53 @@ function toast(msg){
   const t=document.getElementById("toast");t.textContent=msg;t.classList.add("show");
   clearTimeout(window.__toast);window.__toast=setTimeout(()=>t.classList.remove("show"),2600);
 }
+const FIREBASE_DATABASE_URL="https://animora-8165c-default-rtdb.europe-west1.firebasedatabase.app";
+const FIREBASE_STATE_PATH="/animora/state";
+let firebaseSyncReady=false;
+async function firebaseRead(path=FIREBASE_STATE_PATH){
+  const r=await fetch(FIREBASE_DATABASE_URL+path+".json",{cache:"no-store"});
+  if(!r.ok) throw new Error("Firebase HTTP "+r.status);
+  return await r.json();
+}
+async function firebaseWrite(path,data){
+  const r=await fetch(FIREBASE_DATABASE_URL+path+".json",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});
+  if(!r.ok) throw new Error("Firebase HTTP "+r.status);
+  return await r.json();
+}
+function localSave(){LS.set("animora_users",users);LS.set("animora_assets",assets);LS.set("animora_folders",folders);LS.set("animora_settings",appSettings)}
+async function loadFromFirebase(){
+  try{
+    const remote=await firebaseRead();
+    if(remote && typeof remote==="object"){
+      users=Array.isArray(remote.users)?remote.users:users;
+      assets=Array.isArray(remote.assets)?remote.assets:assets;
+      folders=Array.isArray(remote.folders)?remote.folders:folders;
+      appSettings=remote.appSettings&&typeof remote.appSettings==="object"?remote.appSettings:appSettings;
+      localSave();
+    } else {
+      await firebaseWrite(FIREBASE_STATE_PATH,{users,assets,folders,appSettings});
+    }
+  }catch(e){console.warn("Firebase Realtime Database read failed:",e)}
+  firebaseSyncReady=true;
+}
 function saveAll(){
-  LS.set("animora_users",users);LS.set("animora_assets",assets);LS.set("animora_folders",folders);LS.set("animora_settings",appSettings);
-  const cloud=window.AnimoraCloud;
-  if(cloud?.firebaseDB){
-    Promise.all(users.map(u=>{const {password,...safeUser}=u;return cloud.saveUser(safeUser).catch(()=>{})})).catch(()=>{});
-    if(state?.user?.id) cloud.saveFolders(state.user.id,folders).catch(()=>{});
+  localSave();
+  if(firebaseSyncReady){
+    firebaseWrite(FIREBASE_STATE_PATH,{users,assets,folders,appSettings}).catch(e=>console.warn("Firebase Realtime Database write failed:",e));
   }
+}
+function userByName(n){return users.find(u=>u.username.toLowerCase()===n.toLowerCase()||u.email.toLowerCase()===n.toLowerCase())}
+function isAdmin(){return state.user?.username?.toLowerCase()===ADMIN_NAME.toLowerCase()}
+function avatarSrc(){return state.user?.avatar||ASSETS.logo}
+function planIcon(plan){return plans[plan]?.icon||plans.Free.icon}
+
+function planFilterIcon(plan,size=24){return `<img class="filter-plan-img" src="${plans[plan].icon}" alt="${plan}">`}
+function categoryIcon(name,size=22){return iconSVG(name,size)}
+function folderIconHTML(value,color,size=26){
+ const map={folder:"folder",star:"star",spark:"spark",bolt:"bolt",crown:"crown",music:"music",image:"image",play:"play",heart:"heart",bookmark:"bookmark",settings:"settings",camera:"camera",code:"code",game:"game",cloud:"cloud",rocket:"rocket",zap:"zap"};
+ const key=map[value]||((typeof value==="string"&&value.length<=3)?value:null);
+ if(key && pathsForFolderIcon[key]) return `<span class="folder-svg-icon" style="color:${color}">${iconSVG(key,size)}</span>`;
+ return `<span class="folder-emoji" style="color:${color}">${escapeHTML(value||"📁")}</span>`;
 }
 function userByName(n){return users.find(u=>u.username.toLowerCase()===n.toLowerCase()||u.email.toLowerCase()===n.toLowerCase())}
 function isAdmin(){return state.user?.username?.toLowerCase()===ADMIN_NAME.toLowerCase()}
@@ -512,33 +552,20 @@ function render(){
 }
 function bindAuth(){
  document.getElementById("switchAuth").onclick=()=>{state.auth=state.auth==="register"?"login":"register";render()};
- document.getElementById("authForm").onsubmit=async e=>{
+
+ document.getElementById("authForm").onsubmit=e=>{
    e.preventDefault();
-   try{
-    const cloud=window.AnimoraCloud;
-    if(state.auth==="register"){
-      const username=document.getElementById("username").value.trim(),email=document.getElementById("email").value.trim(),pw=document.getElementById("password").value;
-      if(username.length<3||username.length>20)return toast("Der Benutzername muss 3–20 Zeichen lang sein.");
-      if(userByName(username)||users.some(u=>u.email.toLowerCase()===email.toLowerCase()))return toast("Benutzername oder Email ist bereits vergeben.");
-      const cred=await cloud.firebaseAuth.createUserWithEmailAndPassword(email,pw);
-      try{await cloud.firebaseAuth.currentUser?.updateProfile({displayName:username})}catch{}
-      const isOwner=username.toLowerCase()==="l3o.yt";
-      const u={id:cred.user.uid,username,email,plan:isOwner?"Pro":"Free",loginMethod:"Passwort",active:true,mora:0,subscriptionActive:isOwner,subscriptionPaused:false};
-      users.push(u);state.user=u;state.page="home";saveAll();toast("Account erstellt");render();
-    }else{
-      const id=document.getElementById("loginId").value.trim(),pw=document.getElementById("password").value;
-      const local=u=>u&&u.active!==false;
-      let u=userByName(id);
-      const email=u?.email||id;
-      const cred=await cloud.firebaseAuth.signInWithEmailAndPassword(email,pw);
-      if(u&&!local(u))return toast("Dieser Account ist deaktiviert.");
-      if(!u){u={id:cred.user.uid,username:cred.user.displayName||email.split("@")[0],email,plan:"Free",loginMethod:"Passwort",active:true,mora:0,subscriptionActive:false,subscriptionPaused:false};users.push(u);saveAll()}
-      state.user=u;state.page="home";toast("Willkommen zurück");render();
-    }
-   }catch(err){
-    const code=err?.code||"";
-    const msg=code.includes("email-already-in-use")?"Diese Email ist bereits registriert.":code.includes("invalid-credential")||code.includes("wrong-password")||code.includes("user-not-found")?"Benutzername/Email oder Passwort ist falsch.":code.includes("weak-password")?"Das Passwort ist zu schwach.":err?.message||"Anmeldung fehlgeschlagen.";
-    toast(msg);
+   if(state.auth==="register"){
+     const username=document.getElementById("username").value.trim(),email=document.getElementById("email").value.trim(),pw=document.getElementById("password").value;
+     if(username.length<3||username.length>20)return toast("Der Benutzername muss 3–20 Zeichen lang sein.");
+     if(userByName(username)||users.some(u=>u.email.toLowerCase()===email.toLowerCase()))return toast("Benutzername oder Email ist bereits vergeben.");
+     const isOwner=username.toLowerCase()==="l3o.yt"; const u={id:uid("u"),username,email,password:pw,plan:isOwner?"Pro":"Free",loginMethod:"Passwort",active:true,mora:0,subscriptionActive:isOwner,subscriptionPaused:false};
+     users.push(u);state.user=u;saveAll();toast("Account erstellt");render();
+   }else{
+     const id=document.getElementById("loginId").value.trim(),pw=document.getElementById("password").value,u=userByName(id);
+     if(!u||u.password!==pw)return toast("Benutzername/Email oder Passwort ist falsch.");
+     if(u.active===false)return toast("Dieser Account ist deaktiviert.");
+     state.user=u;state.page="home";toast("Willkommen zurück");render();
    }
  };
 }
@@ -646,23 +673,13 @@ function bindUploadModal(){
  input.onchange=()=>{const file=input.files[0];if(!file)return;if(state.uploadType==="animation"){revokePreview();previewURL=URL.createObjectURL(file);if(toggle?.classList.contains("on"))renderPreview()}};
  document.getElementById("runEditAnalysis")?.addEventListener("click",()=>{if(!previewURL)return toast("Wähle zuerst ein Video aus.");const v=document.getElementById("editUploadVideo");if(!v)return;const samples=[[50,18],[50,32],[50,50],[50,68],[50,82],[25,35],[75,35],[25,65],[75,65]];const suggestions=[];for(const [x,y] of samples){const type=classifyPoint(x,y);const data=captureAnalysisFrame();const region=data?regionFromPoint(data,x,y,type):{x,y,w:24,h:24};if(!suggestions.some(p=>Math.hypot(p.x-x,p.y-y)<10)){const p={id:uid("ep"),type,label:type==="media"?"Bild ersetzen":type==="text"?"Text bearbeiten":type==="color"?"Farbe ändern":"Wert ändern",x,y,region,value:""};if(type==="color"&&data){const sx=Math.round(x/100*319),sy=Math.round(y/100*179),i=(sy*320+sx)*4;p.sample=[data.data[i],data.data[i+1],data.data[i+2]];p.value="#"+p.sample.map(n=>n.toString(16).padStart(2,"0")).join("");p.tolerance=72}suggestions.push(p)}}editPoints=[...editPoints,...suggestions].slice(0,12);renderPreview();renderPoints();toast("KI-Analyse abgeschlossen – vorhandene Bereiche wurden als Bearbeitungen erkannt.")});
  document.getElementById("saveUpload").onclick=async()=>{
-  const file=input.files[0],name=document.getElementById("assetName").value.trim(),plan=document.getElementById("assetPlan").value;
-  if(!file||!name)return toast("Datei und Name werden benötigt.");
-  const id=uid("a"),key="file_"+id,editable=!!toggle?.classList.contains("on");
-  const ext=(file.name.split(".").pop()||"bin").toLowerCase();
-  const path=`${state.uploadType}s/${id}.${ext}`;
-  const a={id,key,name,category:state.uploadType,plan,watermark:document.getElementById("watermark").value==="yes",editable,editPoints:editable?editPoints:[],owner:state.user.id,createdAt:Date.now(),storagePath:path};
-  try{
-    const cloud=window.AnimoraCloud;
-    a.url=await cloud.uploadAsset(path,file);
-    await dbPut(key,file);
-    if(state.uploadType==="icon")a.dataUrl=a.url;
-    assets.push(a);
-    saveAll();
-    await cloud.saveAssetMeta(a);
-    revokePreview();document.getElementById("uploadOverlay").remove();toast("Asset hochgeladen");render();
-  }catch(err){console.error(err);toast("Upload fehlgeschlagen: "+(err?.message||"Unbekannter Fehler"));}
-};
+   const file=input.files[0],name=document.getElementById("assetName").value.trim(),plan=document.getElementById("assetPlan").value;
+   if(!file||!name)return toast("Datei und Name werden benötigt.");
+   const id=uid("a");const key="file_"+id;
+   const a={id,key,name,category:state.uploadType,plan,watermark:document.getElementById("watermark").value==="yes",editable:document.getElementById("editable")?.value==="Ja",owner:state.user.id,createdAt:Date.now()};
+   if(state.uploadType==="icon"){a.dataUrl=await fileToDataURL(file)}
+   await dbPut(key,file);assets.push(a);saveAll();document.getElementById("uploadOverlay").remove();toast("Asset hochgeladen");render();
+ };
 }
 function fileToDataURL(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file)})}
 async function hydrateVideos(){
@@ -838,22 +855,11 @@ document.addEventListener("click",e=>{
  if(e.target.id==="profileBtn")return;
 });
 (async()=>{
- try{await openDB()}catch(e){console.error(e)}
- try{
-   const cloud=window.AnimoraCloud;
-   if(cloud?.firebaseDB){
-     const remote=await cloud.loadAll();
-     if(remote){
-       const ru=Object.values(remote.users||{});
-       if(ru.length) users=ru.map(u=>({...u}));
-       const ra=Object.values(remote.assets||{});
-       if(ra.length) assets=ra;
-       if(state?.user?.id && remote.folders?.[state.user.id]) folders=remote.folders[state.user.id];
-       LS.set("animora_users",users);LS.set("animora_assets",assets);LS.set("animora_folders",folders);
-     }
-   }
- }catch(e){console.warn("Animora cloud sync unavailable:",e)}
- render();
+  try{await openDB()}catch(e){console.error(e)}
+  await loadFromFirebase();
+  const existingAdmin=users.find(u=>u.username?.toLowerCase()==="l3o.yt");
+  if(existingAdmin){existingAdmin.plan="Pro";existingAdmin.subscriptionActive=true;existingAdmin.subscriptionPaused=false;saveAll()}
+  render();
 })();
 </script>
 </body>
