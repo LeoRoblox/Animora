@@ -184,7 +184,7 @@ main{max-width:1420px;margin:0 auto;padding:30px}
   const firebaseApp = initializeApp(firebaseConfig);
   const firebaseAuth = getAuth(firebaseApp);
   // Realtime Database URL is intentionally left configurable because Firebase did not include it in the supplied web config.
-  const FIREBASE_DATABASE_URL = window.ANIMORA_FIREBASE_DATABASE_URL || "";
+  const FIREBASE_DATABASE_URL = window.ANIMORA_FIREBASE_DATABASE_URL || "https://animora-8165c-default-rtdb.europe-west1.firebasedatabase.app/";
   const firebaseDB = FIREBASE_DATABASE_URL ? getDatabase(firebaseApp, FIREBASE_DATABASE_URL) : null;
   const supabase = createClient(
     "https://fxujsshzymuefojoszjk.supabase.co",
@@ -193,22 +193,24 @@ main{max-width:1420px;margin:0 auto;padding:30px}
 
   window.AnimoraCloud = {
     firebaseApp, firebaseAuth, firebaseDB, supabase,
+    createUserWithEmailAndPassword: (email,pw) => createUserWithEmailAndPassword(firebaseAuth,email,pw),
+    signInWithEmailAndPassword: (email,pw) => signInWithEmailAndPassword(firebaseAuth,email,pw),
+    signOut: () => signOut(firebaseAuth),
+    updateProfile: (user,data) => updateProfile(user,data),
     async uploadAsset(path, file){
-      const user = firebaseAuth.currentUser;
-      if(!user) throw new Error("Nicht eingeloggt.");
-      const firebaseIdToken = await user.getIdToken();
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("path", path);
-      const response = await fetch("https://fxujsshzymuefojoszjk.supabase.co/functions/v1/animora-upload", {
-        method: "POST",
-        headers: { Authorization: "Bearer " + firebaseIdToken },
-        body: formData
-      });
-      let result = null;
-      try { result = await response.json(); } catch(e) {}
-      if(!response.ok) throw new Error(result?.error || result?.details || "Upload fehlgeschlagen.");
-      return result.url;
+      if(!file) throw new Error("Keine Datei ausgewählt.");
+      const { error } = await supabase.storage
+        .from("animora-assets")
+        .upload(path, file, {
+          contentType: file.type || "application/octet-stream",
+          cacheControl: "3600",
+          upsert: false
+        });
+      if(error) throw error;
+      const { data } = supabase.storage
+        .from("animora-assets")
+        .getPublicUrl(path);
+      return data.publicUrl;
     },
     async deleteAsset(path){
       if(!path) return;
@@ -595,8 +597,8 @@ function bindAuth(){
       const username=document.getElementById("username").value.trim(),email=document.getElementById("email").value.trim(),pw=document.getElementById("password").value;
       if(username.length<3||username.length>20)return toast("Der Benutzername muss 3–20 Zeichen lang sein.");
       if(userByName(username)||users.some(u=>u.email.toLowerCase()===email.toLowerCase()))return toast("Benutzername oder Email ist bereits vergeben.");
-      const cred=await cloud.firebaseAuth.createUserWithEmailAndPassword(email,pw);
-      try{await cloud.firebaseAuth.currentUser?.updateProfile({displayName:username})}catch{}
+      const cred=await cloud.createUserWithEmailAndPassword(email,pw);
+      try{await cloud.updateProfile(cred.user,{displayName:username})}catch{}
       const isOwner=username.toLowerCase()==="l3o.yt";
       const u={id:cred.user.uid,username,email,plan:isOwner?"Pro":"Free",loginMethod:"Passwort",active:true,mora:0,subscriptionActive:isOwner,subscriptionPaused:false};
       users.push(u);state.user=u;state.page="home";saveAll();toast("Account erstellt");render();
@@ -605,7 +607,7 @@ function bindAuth(){
       const local=u=>u&&u.active!==false;
       let u=userByName(id);
       const email=u?.email||id;
-      const cred=await cloud.firebaseAuth.signInWithEmailAndPassword(email,pw);
+      const cred=await cloud.signInWithEmailAndPassword(email,pw);
       if(u&&!local(u))return toast("Dieser Account ist deaktiviert.");
       if(!u){u={id:cred.user.uid,username:cred.user.displayName||email.split("@")[0],email,plan:"Free",loginMethod:"Passwort",active:true,mora:0,subscriptionActive:false,subscriptionPaused:false};users.push(u);saveAll()}
       state.user=u;state.page="home";toast("Willkommen zurück");render();
